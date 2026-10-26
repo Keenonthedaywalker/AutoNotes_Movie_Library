@@ -1,0 +1,226 @@
+import json
+import base64
+from .main import search_movies_query, get_single_movie_details
+from .data_details import NewDataDetails
+from django.contrib.auth import login
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.forms import UserCreationForm
+from django.shortcuts import render, redirect
+from django.http import Http404
+from django.shortcuts import render, redirect, get_object_or_404
+from django.views.decorators.http import require_POST
+from django.http import HttpResponse
+from django.utils.text import slugify
+from django.db.models import Avg
+from .models import UserMovie
+from .forms import UserMovieForm
+from collections import Counter
+
+# Get the home page
+@login_required
+def home(request):
+    return render(request, "core/home.html")
+
+# Gets the signup page
+def signup(request):
+    if request.method == "POST":
+        form = UserCreationForm(request.POST)
+        if form.is_valid():
+            # Saves to SQLite with a hashed password
+            user = form.save()     
+            # Log them in right away   
+            login(request, user)      
+            return redirect("home")
+    else:
+        form = UserCreationForm()
+    return render(request, "registration/signup.html", {"form": form})
+
+# Get the stats page
+@login_required
+def stats(request):
+    # Only this user's movies, so nobody sees another person's data
+    movies = UserMovie.objects.filter(user=request.user)
+    # Build the chart HTML (or None if there is nothing to plot)
+    scatter_plot_plotly = NewDataDetails.scatter_plot_plotly(movies)
+    # Build the same chart, but with matplotlib. This chart isn't seen directly, but instead can be downloaded by the user
+    scatter_plot = NewDataDetails.scatter_plot(movies)
+    bar_plot = NewDataDetails.bar_plot()
+    time_chart = NewDataDetails.time_chart()
+    # Hand everything over to the template, where it is shown with {{ text|safe }} or something similar
+    return render(request, "core/stats.html", {"bar_plot": bar_plot, "time_chart": time_chart, "scatter_plot_plotly": scatter_plot_plotly, "scatter_plot": scatter_plot})
+
+# The download functionality for the scatter chart
+@login_required
+def download_scatter(request):
+    movies = UserMovie.objects.filter(user=request.user)
+    chart = NewDataDetails.scatter_plot(movies)
+    if chart is None:
+        raise Http404("Nothing to chart yet")
+
+    # Turn the base64 text back into raw PNG bytes
+    response = HttpResponse(base64.b64decode(chart), content_type="image/png")
+    # "attachment" makes the browser download instead of display
+    response["Content-Disposition"] = 'attachment; filename="movie-ratings-chart.png"'
+    return response
+
+# Gets the profile page
+@login_required
+def profile(request):
+    movies = UserMovie.objects.filter(user=request.user)
+    stats = {
+        "total": movies.count(),
+        "average_rating": movies.aggregate(avg=Avg("rating"))["avg"],
+        "directors": count_field(movies, "directors"),
+        "genres": count_field(movies, "genres"),
+        "stars": count_field(movies, "stars", clean=lambda s: s.split(" - ")[0]),
+    }
+    return render(request, "core/profile.html", {"movies": movies, "stats": stats})
+
+# Gets the search page
+@login_required
+def search(request):
+    query = request.GET.get("q", "").strip()
+    results = search_movies_query(query) if query else []
+    return render(request, "core/search.html", {"query": query, "results": results})
+
+
+# Gets the information on the movies and returns the movie_detail page
+@login_required
+def movie_detail(request, movie_id):
+    movie = get_single_movie_details(movie_id)
+    if movie is None:
+        raise Http404("Movie not found")
+    in_list = UserMovie.objects.filter(user=request.user, imdb_id=movie_id).first()
+    return render(request, "core/movie_detail.html", {"movie": movie, "in_list": in_list})
+
+# Add movie to profile
+@login_required
+@require_POST
+def add_movie(request, movie_id):
+    details = get_single_movie_details(movie_id)
+    if details is None:
+        raise Http404("Movie not found")
+
+    entry, created = UserMovie.objects.get_or_create(
+        user=request.user,
+        imdb_id=movie_id,
+        defaults={
+            "title": details["title"],
+            "cover_url": details["cover"] or "",
+            "plot": details["plot"] or "",
+            "taglines": details["taglines"] or [],      # <- new
+            "release_date": str(details["release_date"] or ""),
+            "genres": details["genres"],
+            "directors": details["directors"],
+            "writers": details["writers"],
+            "stars": details["stars"],
+        },
+    )
+    return redirect("movie_edit", pk=entry.pk)
+
+# Edit movie stuff
+@login_required
+def movie_edit(request, pk):
+    # Filtering by user means nobody can open another user's entry
+    entry = get_object_or_404(UserMovie, pk=pk, user=request.user)
+    if request.method == "POST":
+        form = UserMovieForm(request.POST, instance=entry)
+        if form.is_valid():
+            form.save()
+            return redirect("movie_edit", pk=entry.pk)
+    else:
+        form = UserMovieForm(instance=entry)
+    # The order is 10 down to 1 because the CSS reverses the row, which makes the stars appear as 1 to 10 left to right and fills leftwards on hover.
+    return render(request, "core/movie_edit.html", {
+    "movie": entry, "form": form, "stars": range(10, 0, -1),
+    })
+
+# Delete movie functionality
+@login_required
+@require_POST
+def movie_delete(request, pk):
+    entry = get_object_or_404(UserMovie, pk=pk, user=request.user)
+    entry.delete()
+    return redirect("profile")
+
+# This is used for markdown formatting.
+def _yaml(value):
+    # A JSON string is also a valid YAML double-quoted string, so quotes,
+    # colons and line breaks in the user's text can't break the frontmatter.
+    return json.dumps(value or "", ensure_ascii=False)
+
+# Export movie card as a valid markdown file that can be used in Obsidian Notes
+@login_required
+def movie_export(request, pk):
+    m = get_object_or_404(UserMovie, pk=pk, user=request.user)
+
+    quotes = [q.strip() for q in m.favourite_quotes.splitlines() if q.strip()]
+    rating = m.rating or 0
+    score = f"{'★' * rating}{'☆' * (10 - rating)} | {rating}/10"
+    watched = m.watched_date.isoformat() if m.watched_date else ""
+
+    lines = [
+        "---",
+        f"moviePoster: {_yaml(m.cover_url)}",
+        f"movieTaglines: {_yaml(' | '.join(m.taglines))}",
+        f"directors: {_yaml(', '.join(m.directors))}",
+        f"writers: {_yaml(', '.join(m.writers))}",
+        "stars:",
+        *[f"  - {_yaml(s)}" for s in m.stars],
+        f"dateReleased: {_yaml(m.release_date)}",
+        f"dateWatched: {watched}",
+        f"myScore: {_yaml(score)}",
+        f"personalThoughts: {_yaml(m.opinion)}",
+        f"favQuote: {_yaml(' / '.join(quotes))}",
+        f"favScene: {_yaml(m.favourite_scene_url)}",
+        "---",
+        "",
+        '### <span style="color:rgb(146, 208, 80)">Movie Poster: </span>',
+        f"![]({m.cover_url})" if m.cover_url else "",
+        "",
+        '### <span style="color:rgb(211, 197, 126)">Taglines:</span>',
+        *[f"- {t}" for t in m.taglines],
+        "",
+        '### <span style="color:rgb(6, 152, 72)">Directors:</span>',
+        ", ".join(m.directors),
+        "",
+        '### <span style="color:rgb(0, 176, 240)">Writers:</span>',
+        ", ".join(m.writers),
+        "",
+        '### <span style="color:rgb(255, 192, 0)">Stars: </span>',
+        *[f"  - {s}" for s in m.stars],
+        "",
+        '### <span style="color:rgb(200, 91, 251)">Date Released: </span>',
+        m.release_date,
+        "",
+        '### <span style="color:rgb(2, 242, 182)">Date Watched:</span>',
+        watched,
+        "",
+        '### <span style="color:rgb(154, 86, 29)">My Score:</span>',
+        score,
+        "",
+        '### <span style="color:rgb(112, 48, 160)">Personal Thoughts:</span>',
+        m.opinion,
+        "",
+        '### <span style="color:rgb(0, 112, 192)">Favourite Quote:</span>',
+        *[f'*"{q}"*' for q in quotes],
+        "",
+        '### <span style="color:rgb(146, 208, 80)">Favourite Scene: </span>',
+        f"![]({m.favourite_scene_url})" if m.favourite_scene_url else "",
+        "",
+    ]
+
+    response = HttpResponse("\n".join(lines), content_type="text/markdown; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{slugify(m.title) or "movie"}.md"'
+    return response
+  
+# Count the movie details
+def count_field(movies, field, top=10, min_count=1, clean=None):
+    counter = Counter()
+    for m in movies:
+        values = getattr(m, field) or []
+        if clean:
+            values = [clean(v) for v in values]
+        counter.update(set(values))   # set(): a name repeated within one movie counts once
+    return [(name, n) for name, n in counter.most_common(top) if n >= min_count]
+
