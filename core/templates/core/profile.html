@@ -25,17 +25,37 @@
     </script>
 
     <h2>My Movies</h2>
-    <div class="movie-grid">
-        {% for m in movies %}
-            <a class="movie-tile" href="{% url 'movie_edit' m.pk %}">
-                {% if m.cover_url %}<img src="{{ m.cover_url }}" alt="{{ m.title }}">{% endif %}
-                <span class="tile-title">{{ m.title }}</span>
-                {% if m.rating %}<span class="tile-rating">{{ m.rating }}/10 ★</span>{% endif %}
-            </a>
-        {% empty %}
-            <p>Your library is empty. Click the + card above to add your first movie.</p>
-        {% endfor %}
-    </div>
+
+    {% if movies %}
+    <form method="post" action="{% url 'movie_bulk_delete' %}" id="bulk-form">
+        {% csrf_token %}
+
+        <div class="bulk-bar">
+            <label class="select-all">
+                <input type="checkbox" id="select-all"> Select all
+            </label>
+            <button type="submit" class="btn btn-danger" id="bulk-delete" disabled>
+                Delete selected (<span id="selected-count">0</span>)
+            </button>
+        </div>
+
+        <div class="movie-grid">
+            {% for m in movies %}
+                <div class="movie-tile">
+                    <input type="checkbox" class="tile-check" name="selected" value="{{ m.pk }}"
+                        aria-label="Select {{ m.title }}">
+                    <a href="{% url 'movie_edit' m.pk %}">
+                        {% if m.cover_url %}<img src="{{ m.cover_url }}" alt="{{ m.title }}">{% endif %}
+                        <span class="tile-title">{{ m.title }}</span>
+                        {% if m.rating %}<span class="tile-rating">{{ m.rating }}/10 ★</span>{% endif %}
+                    </a>
+                </div>
+            {% endfor %}
+        </div>
+    </form>
+    {% else %}
+        <p>Your library is empty. Click the + card above to add your first movie.</p>
+    {% endif %}
 
     <h2>Quick Stats</h2>
     {% if stats.total %}
@@ -75,5 +95,38 @@
     {% else %}
         <p>Add some movies to see your stats.</p>
     {% endif %}
+
+    <script>
+        const bulkForm = document.getElementById("bulk-form");
+        if (bulkForm) {
+            const checks = bulkForm.querySelectorAll(".tile-check");
+            const selectAll = document.getElementById("select-all");
+            const deleteBtn = document.getElementById("bulk-delete");
+            const counter = document.getElementById("selected-count");
+
+            // Update the counter, enable/disable the button, and sync "Select all"
+            function refresh() {
+                const n = bulkForm.querySelectorAll(".tile-check:checked").length;
+                counter.textContent = n;
+                deleteBtn.disabled = n === 0;
+                selectAll.checked = n === checks.length;
+                selectAll.indeterminate = n > 0 && n < checks.length;   // dash when only some are ticked
+            }
+
+            checks.forEach(c => c.addEventListener("change", refresh));
+            selectAll.addEventListener("change", () => {
+                checks.forEach(c => c.checked = selectAll.checked);
+                refresh();
+            });
+
+            // Ask before deleting
+            bulkForm.addEventListener("submit", e => {
+                const n = bulkForm.querySelectorAll(".tile-check:checked").length;
+                if (!confirm(`Remove ${n} movie${n === 1 ? "" : "s"} from your list?`)) {
+                    e.preventDefault();
+                }
+            });
+        }
+    </script>
 
 {% endblock %}

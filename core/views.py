@@ -143,6 +143,18 @@ def movie_delete(request, pk):
     entry.delete()
     return redirect("profile")
 
+@login_required
+@require_POST
+def movie_bulk_delete(request):
+    # Every ticked checkbox sends its value under the name "selected"
+    ids = [int(i) for i in request.POST.getlist("selected") if i.isdigit()]
+
+    # Filtering by user means someone can't delete another person's entries
+    # by editing the form's values
+    UserMovie.objects.filter(user=request.user, pk__in=ids).delete()
+
+    return redirect("profile")
+
 # This is used for markdown formatting.
 def _yaml(value):
     # A JSON string is also a valid YAML double-quoted string, so quotes,

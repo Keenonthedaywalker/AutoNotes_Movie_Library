@@ -32,4 +32,5 @@ urlpatterns = [
     path("library/<int:pk>/delete/", views.movie_delete, name="movie_delete"),
     path("library/<int:pk>/export/", views.movie_export, name="movie_export"),
     path("stats/download/", views.download_scatter, name="download_scatter"),
+    path("library/delete/", views.movie_bulk_delete, name="movie_bulk_delete"),
 ]

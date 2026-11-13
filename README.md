@@ -8,6 +8,8 @@ A Simple website for creating a custom "seen films" database and exporting markd
 (TODO)
 
 ### Usage
+Note: If you get an error when searching for movies, then it means that the imdbinfo module needs to be updated to the latest version.
+
 Currently this is what is needed to use the site, but all of this most likely won't be needed when the website is up and proper(at least for users)
 
 Setup virtual environment: python -m venv venv
